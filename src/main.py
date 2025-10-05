@@ -54,6 +54,14 @@ async def scroll_reviews_until_done(page, max_no_new=6, max_iters=300):
         # if len(seen) >= 2400: break
     return list(seen)
 
+def normalize_text_one_line(s: str) -> str:
+    if not s:
+        return ""
+    
+    s = re.sub(r'[\r\n\u2028\u2029]+', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
+
 def parse_review_html(html):
     soup = BeautifulSoup(html, "lxml")
     # id
@@ -101,10 +109,12 @@ def parse_review_html(html):
     # google use <div lang="..."> for the main text
     t_el = soup.select_one('div[lang]')
     if t_el:
-        text = t_el.get_text(separator=' ', strip=True)
+        raw_text = t_el.get_text(separator=' ', strip=True)
     else:
         # fallback
-        text = soup.get_text(separator=' ', strip=True)
+        raw_text = soup.get_text(separator=' ', strip=True)
+
+    text = normalize_text_one_line(raw_text)
 
     return {
         "review_id": rid,

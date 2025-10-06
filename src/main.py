@@ -1,184 +1,40 @@
 import asyncio
-import csv
-import re
-import time
-from bs4 import BeautifulSoup
+from typing import List, Tuple
 from playwright.async_api import async_playwright
+from scrapper import scrape_place, append_to_combined
 
-URL = "https://www.google.com/maps/place/Sky+Zone+Majadas/@14.6243552,-90.5562381,16.21z/data=!4m6!3m5!1s0x8589a1b264da9645:0x6f7483afde72fae5!8m2!3d14.6239401!4d-90.5608469!16s%2Fg%2F11hczwcg4s?entry=ttu&g_ep=EgoyMDI1MDkyOS4wIKXMDSoASAFQAw%3D%3D"
+LINKS: List[Tuple[str, str]] = [
+    ("club_majadas", "https://www.google.com/maps/place/Club+Majadas/@14.6349945,-90.6766972,12z/data=!4m10!1m2!2m1!1sclub!3m6!1s0x8589a1ac4a4e8949:0xc08daa26fa8794a6!8m2!3d14.6199411!4d-90.560102!15sCgRjbHViWgYiBGNsdWKSAQtzcG9ydHNfY2x1YpoBJENoZERTVWhOTUc5blMwVkpRMEZuU1VSSWVWOWxYM2hSUlJBQqoBNhABKggiBGNsdWIoDjIeEAEiGhmb-Djzzmzp2o8QX95WJZwjDT6Md0iPrXCKMggQAiIEY2x1YuABAPoBBAgAECk!16s%2Fg%2F11rs0x5cr?entry=ttu&g_ep=EgoyMDI1MTAwMS4wIKXMDSoASAFQAw%3D%3D"),
+    ("club_espaniol", "https://www.google.com/maps/place/Club+Espa%C3%B1ol+-+Guatemala/@14.6349945,-90.6511765,13z/data=!4m10!1m2!2m1!1sclub!3m6!1s0x8589a0387ea8f411:0x7295032c17ead494!8m2!3d14.6349945!4d-90.5749588!15sCgRjbHViWgYiBGNsdWKSAQtzb2NpYWxfY2x1YpoBI0NoWkRTVWhOTUc5blMwVkpRMEZuU1VSMmRXVXlVbUZuRUFFqgE2EAEqCCIEY2x1YigOMh4QASIaGZv4OPPObOnajxBf3lYlnCMNPox3SI-tcIoyCBACIgRjbHVi4AEA-gEECAAQNQ!16s%2Fg%2F1hf9wpwqp?entry=ttu&g_ep=EgoyMDI1MTAwMS4wIKXMDSoASAFQAw%3D%3D"),
+    ("club_montania", "https://www.google.com/maps/place/Club+Campestre+La+monta%C3%B1a/@14.6349945,-90.6511765,13z/data=!4m10!1m2!2m1!1sclub!3m6!1s0x85899fe4af26f5ef:0xaa5237c68a36bc1a!8m2!3d14.671049!4d-90.59737!15sCgRjbHViWgYiBGNsdWKSAQxjb3VudHJ5X2NsdWKaASNDaFpEU1VoTk1HOW5TMFZKUTBGblNVTXlOblpEUzA5bkVBRaoBNhABKggiBGNsdWIoDjIeEAEiGhmb-Djzzmzp2o8QX95WJZwjDT6Md0iPrXCKMggQAiIEY2x1YuABAPoBBAgAECk!16s%2Fg%2F1tp08fqj?entry=ttu&g_ep=EgoyMDI1MTAwMS4wIKXMDSoASAFQAw%3D%3D"),
+    ("club_americano", "https://www.google.com/maps/place/Club+Americano/@14.6063905,-90.5754284,13z/data=!4m10!1m2!2m1!1sclub!3m6!1s0x8589a3b26f62b751:0x79b676724cd180fb!8m2!3d14.6063905!4d-90.4992107!15sCgRjbHViWgYiBGNsdWKSAQtzcG9ydHNfY2x1YpoBJENoZERTVWhOTUc5blMwVkpRMEZuU1VSMWJtVkVWR2gzUlJBQqoBNhABKggiBGNsdWIoDjIeEAEiGhmb-Djzzmzp2o8QX95WJZwjDT6Md0iPrXCKMggQAiIEY2x1YuABAPoBBAgAECI!16s%2Fg%2F1tjmd_0q?entry=ttu&g_ep=EgoyMDI1MTAwMS4wIKXMDSoASAFQAw%3D%3D")
+]
+DEFAULT_OUT_DIR = "../data/raw"
+COMBINED_FILENAME = "google_maps_all_reviews.csv"
 
-async def scroll_reviews_until_done(page, max_no_new=6, max_iters=300):
-    # Find a review element to determine the scrollable container
-    await page.wait_for_selector('div[data-review-id][jsaction]', timeout=20000)
-    scrollable = await page.evaluate_handle("""
-    () => {
-        const sample = document.querySelector('div[data-review-id][jsaction]');
-        if (!sample) return document.scrollingElement || document.documentElement;
-        let p = sample.parentElement;
-        while (p && p !== document.body) {
-            const s = window.getComputedStyle(p).overflowY;
-            if (s === 'auto' || s === 'scroll') return p;
-            p = p.parentElement;
-        }
-        return document.scrollingElement || document.documentElement;
-    }
-    """)
-    seen = set()
-    no_new = 0
-    iters = 0
-
-    while no_new < max_no_new and iters < max_iters:
-        iters += 1
-        
-        # Scroll the container down
-        await scrollable.evaluate("el => el.scrollBy(0, 2000)")
-        
-        # Allow content to load
-        await page.wait_for_timeout(800)
-        
-        # Force click any "Ver más" visible to expand long reviews
-        await page.evaluate("""
-            () => document.querySelectorAll('button[aria-label=\"Ver más\"]').forEach(b => { try { b.click(); } catch(e){} })
-        """)
-        # Recolecta ids actuales
-        ids = await page.evaluate('''() => Array.from(document.querySelectorAll('div[data-review-id][jsaction]'))
-                                        .map(e => e.getAttribute('data-review-id'))''')
-        new_ids = [i for i in ids if i and i not in seen]
-        if new_ids:
-            for i in new_ids:
-                seen.add(i)
-            no_new = 0
-        else:
-            no_new += 1
-            
-        # if len(seen) >= 2400: break
-    return list(seen)
-
-def normalize_text_one_line(s: str) -> str:
-    if not s:
-        return ""
-    
-    s = re.sub(r'[\r\n\u2028\u2029]+', ' ', s)
-    s = re.sub(r'\s+', ' ', s)
-    return s.strip()
-
-def parse_review_html(html):
-    soup = BeautifulSoup(html, "lxml")
-    # id
-    rid = None
-    root = soup.find(attrs={"data-review-id": True})
-    if root:
-        rid = root.get("data-review-id")
-
-    # user url & username
-    user_url = None
-    username = None
-    btn = soup.select_one('button[data-href*="/maps/contrib/"]')
-    if btn:
-        user_url = btn.get("data-href")
-        d = btn.find('div')
-        if d:
-            username = d.get_text(strip=True)
-
-    # stars
-    stars = None
-    star_el = soup.select_one('[aria-label*="estrella"], [aria-label*="estrellas"]')
-    if star_el:
-        aria = star_el.get("aria-label", "")
-        m = re.search(r'([1-5])', aria)
-        if m:
-            stars = int(m.group(1))
-
-    # time
-    time_text = None
-    # span with "hace" or similar words
-    txt_candidates = soup.find_all(string=re.compile(r'\bhace\b|\bdía\b|\bdías\b|\bmes\b|\baño\b|\baños\b|\bha\b', re.I))
-    if txt_candidates:
-        time_text = txt_candidates[0].strip()
-    else:
-        # fallback
-        spans = soup.find_all('span')
-        for s in spans:
-            t = s.get_text(strip=True)
-            if len(t) < 40 and re.search(r'\d', t):
-                time_text = t
-                break
-
-    # review text
-    text = ""
-    # google use <div lang="..."> for the main text
-    t_el = soup.select_one('div[lang]')
-    if t_el:
-        raw_text = t_el.get_text(separator=' ', strip=True)
-    else:
-        # fallback
-        raw_text = soup.get_text(separator=' ', strip=True)
-
-    text = normalize_text_one_line(raw_text)
-
-    return {
-        "review_id": rid,
-        "user_url": user_url,
-        "username": username,
-        "stars": stars,
-        "time": time_text,
-        "text": text
-    }
-
-async def run():
-    reviews = {}
+async def process_all(pairs, out_dir=DEFAULT_OUT_DIR, com_file=COMBINED_FILENAME, headless=False, sequential=True):
+    total = 0
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto(URL)
-        
-        # click on "Opiniones" tab
-        try:
-            reviews_tab = page.locator('div.Gpq6kf.NlVald >> text="Opiniones"')
-            await reviews_tab.wait_for(state="visible", timeout=10000)
-            await reviews_tab.click()
-        except Exception:
-            # fallback
-            await page.wait_for_selector('div[data-review-id][jsaction]', timeout=20000)
-
-        await page.wait_for_selector('div[data-review-id][jsaction]', timeout=20000)
-        
-        # scroll until done
-        ids = await scroll_reviews_until_done(page, max_no_new=6, max_iters=500)
-
-        # expand all "Ver más"
-        await page.evaluate("""
-            () => document.querySelectorAll('button[aria-label=\"Ver más\"]').forEach(b => { try { b.click(); } catch(e){} })
-        """)
-        await page.wait_for_timeout(500)
-
-        # catch all review elements
-        elems = await page.query_selector_all('div[data-review-id][jsaction]')
-        outer_htmls = []
-        for el in elems:
+        browser = await p.chromium.launch(headless=False)  # headless=False para depurar
+        for pid, url in pairs:
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            await page.goto(url, wait_until="domcontentloaded")
+            
             try:
-                html = await el.evaluate("el => el.outerHTML")
-                outer_htmls.append(html)
+                await page.locator('button[aria-label*="Aceptar"], button[aria-label*="Acepto"], button:has-text("Aceptar")').first.click(timeout=2000)
             except Exception:
-                continue
-
-        for html in outer_htmls:
-            r = parse_review_html(html)
-            if not r["review_id"]:
-                continue
-            reviews[r["review_id"]] = r
-
+                pass
+            
+            print(f"\nScraping place_id='{pid}' url='{url}'")
+            rows = await scrape_place(page=page, url=url, out_dir=out_dir, place_id=pid, save_per_place=True, headless=headless)
+            append_to_combined(rows, out_dir=out_dir, combined_name=com_file)
+            print(f" -> {len(rows)} reviews saved for {pid or url}")
+            total += len(rows)
+            await context.close()
         await browser.close()
-
-    # export CSV
-    rows = list(reviews.values())
-    with open("../data/raw/google_maps_reviews_bs4.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["review_id","user_url","username","stars","time","text"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"Exported {len(rows)} reviews to google_maps_reviews_bs4.csv")
+    print(f"Done. Total reviews scraped: {total}")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(process_all(LINKS, out_dir=DEFAULT_OUT_DIR, headless=False, sequential=True))

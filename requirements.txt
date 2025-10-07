@@ -3,3 +3,11 @@ webdriver-manager
 beautifulsoup4
 lxml
 requests
+ipykernel
+pandas
+openpyxl
+numpy
+matplotlib
+seaborn
+scikit-learn
+jupyter
